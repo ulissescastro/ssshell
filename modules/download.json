@@ -1,0 +1,10 @@
+{
+    "action": {
+        "download": {
+            "src": "/etc/passwd", 
+            "dst": "/tmp/remote_passwd"
+        }
+    }, 
+    "info": "Execute a single command", 
+    "threads": 8
+}

@@ -1,0 +1,10 @@
+{
+    "action": {
+        "upload": {
+            "src": "/etc/issue", 
+            "dst": "/tmp/my_issue"
+        }
+    }, 
+    "info": "Execute a single command", 
+    "threads": 8
+}

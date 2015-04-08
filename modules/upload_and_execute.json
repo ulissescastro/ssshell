@@ -1,0 +1,9 @@
+{
+    "action": {
+        "upload_and_execute": {
+            "src": "scripts/default.sh"
+        }
+    }, 
+    "info": "Execute a single command", 
+    "threads": 8
+}
