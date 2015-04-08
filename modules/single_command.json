@@ -1,0 +1,11 @@
+{
+    "action": {
+        "execute": {
+            "command": "[ -f /etc/wpasupplicant_WPA-PSK.conf ] && cat /etc/wpasupplicant_WPA-PSK.conf", 
+            "timeout": 15, 
+            "sudo": false
+        }
+    }, 
+    "info": "Execute a single command", 
+    "threads": 8
+}
