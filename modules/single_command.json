@@ -1,7 +1,7 @@
 {
     "action": {
         "execute": {
-            "command": "id", 
+            "command": "sleep 30; id", 
             "timeout": 15, 
             "sudo": false
         }

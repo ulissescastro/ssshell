@@ -30,19 +30,13 @@ def randomword(length):
     return ''.join(random.choice(string.lowercase) for i in range(length))
 
 
-def ssh_client(client, hostname,
-               username, password, port, key_filename, timeout=30):
+def ssh_get_transport(client, hostname,
+                      username, password, port, key_filename, timeout=30):
     try:
-        # create client object
-        client = paramiko.SSHClient()
-        # auto add keys
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        # global host_keys
-        host_keys = client.get_host_keys()
         # create connection
         client.connect(hostname=hostname, port=port,
                        username=username, password=password,
-                       timeout=timeout, allow_agent=False,
+                       timeout=timeout, key_filename=None, allow_agent=False,
                        look_for_keys=False, gss_deleg_creds=False)
         # lets get this party started
         transport = client.get_transport()
@@ -111,7 +105,7 @@ def upload(transport, src, dst):
     return False
 
 
-def execute(transport, command, sudo=False):
+def execute(transport, command, timeout, sudo=False):
     if sudo:
         command = "/usr/bin/sudo su -c '%s'" % command
 
@@ -129,16 +123,25 @@ def execute(transport, command, sudo=False):
     return
 
 
-def check_output(session_channel):
-    # this function will close connection (transport)
-    while not session_channel.exit_status_ready():
-        time.sleep(0.1)
-
-    exit_status = session_channel.exit_status
-    output = session_channel.recv(-1)
+def check_output(session_channel, timeout):
+    # timer
+    start = time.time()
+    timeup = True
+    output = None
+    exit_status = None
+    # output timer
+    while (time.time() - start) < timeout:
+        if session_channel.exit_status_ready():
+            exit_status = session_channel.exit_status
+            output = session_channel.recv(-1)
+            timeup = False
+            break
+        else:
+            time.sleep(0.1)
+    
     session_channel.transport.close()
 
-    return output
+    return exit_status, timeup, output
 
 
 def upload_and_execute(transport, src, sudo=False):
@@ -157,56 +160,6 @@ def upload_and_execute(transport, src, sudo=False):
     return session_channel
 
 
-def load_module(module_name):
-    module = 'modules/%s.json' % module_name
-    try:
-        with open(module) as module_settings:
-            settings = json.load(module_settings,
-                                 object_pairs_hook=OrderedDict)
-            return settings
-    except Exception, e:
-        print "load_module: %s" % e
-        pass
-
-    return
-
-
-def worker(tuple_args):
-    ip, client, action, args = tuple_args
-    try:
-        transport = ssh_get_transport(client, ip)
-    except Exception, e:
-        print "worker: %s" % e
-        pass
-
-    if client:
-        connected = True
-        # don't run actions twice
-        if not host_keys.lookup(ip):
-            output = globals()[action](client, *args)
-            client.close()
-            log_handler(ip, output)
-        else:
-            print "%s host already used" % ip
-
-    return (ip, connected, output)
-
-
-def pool_args(ip_list, client, action, args):
-    repeat_times = len(ip_list)
-    tuple_args = zip(ip_list, itertools.repeat(client, repeat_times),
-                     itertools.repeat(action, repeat_times),
-                     itertools.repeat(args, repeat_times))
-
-    return tuple_args
-
-
-def start_process(client):
-    global host_keys
-    host_keys = client.get_host_keys()
-    return
-
-
 def safe_write_output(log_file, output):
     if not os.path.exists(log_file):
         with open(log_file, 'wb') as log:
@@ -218,12 +171,12 @@ def safe_write_output(log_file, output):
     return
 
 
-def log_handler(ip, output):
+def log_handler(hostname, output):
     # essa funcao sera substituida pelo logger para o arcsight
     if output:
         # date = time.strftime("%d%m%y-%H%M%S")
         # date = time.strftime("%d%m%y")
-        log_dir = 'logs/%s' % ip
+        log_dir = 'logs/%s' % hostname
         if not os.path.isdir(log_dir):
             os.mkdir(log_dir)
 
@@ -231,20 +184,87 @@ def log_handler(ip, output):
         log_name = "%s.log" % randomword(10)
         log_file = '%s/%s' % (log_dir, log_name)
         safe_write_output(log_file, output)
-        ip = "%s\n" % ip
-        safe_write_output(log_success, ip)
+        hostname = "%s\n" % hostname
+        safe_write_output(log_success, hostname)
 
     return
 
 
-def main(ip_list, module_name):
+def load_settings(filename):
+    try:
+        with open(filename) as json_settings:
+            settings = json.load(json_settings,
+                                 object_pairs_hook=OrderedDict)
+            return settings
+    except Exception, e:
+        print "load_module: %s" % e
+        pass
+
+    return
+
+
+def worker(tuple_args):
+    # unpack worker args
+    hostname, client, client_args, action, action_args = tuple_args
+    # unpack client args
+    username, password, key_filename, timeout = client_args
+    try:
+        transport = ssh_get_transport(client,
+                                      hostname,
+                                      username,
+                                      password,
+                                      22,
+                                      key_filename,
+                                      timeout)
+    except Exception, e:
+        print "worker: %s" % e
+        pass
+
+    if transport:
+        # don't run actions twice
+        if not host_keys.lookup(hostname):
+            if action not in ['upload', 'download']:
+                session_channel = globals()[action](transport, *action_args)
+                exit_status, timeup, output = check_output(session_channel,
+                                                           10)
+                log_handler(hostname, output)
+            else:
+                output = globals()[action](transport, *action_args)
+            client.close()
+            return (hostname, exit_status, timeup, output)
+        else:
+            print "%s host already used" % hostname
+            client.close()
+
+    return (None, None, None, None)
+
+
+def pool_args(hostnames, client, client_args, action, action_args):
+    repeat_times = len(hostnames)
+    tuple_args = zip(hostnames,
+                     itertools.repeat(client, repeat_times),
+                     itertools.repeat(client_args, repeat_times),
+                     itertools.repeat(action, repeat_times),
+                     itertools.repeat(action_args, repeat_times))
+
+    return tuple_args
+
+
+def start_process(client):
+    global host_keys
+    host_keys = client.get_host_keys()
+    return
+
+
+def main(hostnames, module, config):
     results = []
     allowed_actions = ['execute', 'download', 'upload', 'upload_and_execute']
-
+    # load credentials
+    client_args = load_settings('confs/%s.json' % config).values()
     # load task settings
-    settings = load_module(module_name)
+    settings = load_settings('modules/%s.json' % module)
     # randomize ips
-    random.shuffle(ip_list)
+    random.shuffle(hostnames)
     # info
     print "module info: %s" % settings['info']
     print "num of workers: %s" % settings['threads']
@@ -260,25 +280,32 @@ def main(ip_list, module_name):
     for action, action_args in settings['action'].iteritems():
         if action in allowed_actions:
             results = pool.map(worker,
-                               pool_args(ip_list, client,
-                                         action, list(action_args.values())))
+                               pool_args(hostnames,
+                                         client,
+                                         client_args,
+                                         action,
+                                         list(action_args.values())
+                                         )
+                               )
             pool.close()
             pool.join()
 
     return results
 
 if __name__ == '__main__':
-    # tests.... tests...
+    hostnames = open(sys.argv[1], 'r').read().split('\n')[:-1]
     # TODO: retornar numero total de servidores,
     # numero total de servidores acessados,
     # numero total de servidores com execucao com sucesso
-    servers = open(sys.argv[1], 'r').read().split('\n')[:-1]
-    results = main(servers, 'download')
+    module = sys.argv[2]
+    config = sys.argv[3]
+    results = main(hostnames, module, config)
     count = 0
     for result in results:
-        ip, connected, output = result
-        if connected:
-            print "%s\n%s" % (ip, output)
-            count += 1
+        hostname, exist_status, connected, output = result
+        #ip, connected, output = result
+        #if connected:
+        #    print "%s\n%s" % (ip, output)
+        #    count += 1
 
-    print "done [%s/%s]" % (count, len(servers))
+    #print "done [%s/%s]" % (count, len(servers))

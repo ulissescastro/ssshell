@@ -1,0 +1,6 @@
+{
+	"username": "root",
+	"password": "x",
+	"key_filename": "/home/ucastro/.ssh/id_rsa",
+	"timeout": 30
+}
